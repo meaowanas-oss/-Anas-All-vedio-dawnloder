@@ -6,14 +6,6 @@ Dev: Anas | Owner: SAHAT ANAS (@sahatanas)
 Supports: Facebook, Instagram, TikTok, Twitter/X, Pinterest, Reddit,
           Dailymotion, Vimeo, and 1000+ other sites via yt-dlp.
           (YouTube intentionally excluded)
-
-Features:
-    - Owner-only access management (/giveaccess, /removeaccess)
-    - Force join: users must join both channels before using the bot
-    - Single-download concurrency (asyncio.Semaphore) to avoid RAM spikes
-    - Hard-capped resolution (720p) and file size
-    - Downloaded files ALWAYS removed in finally block
-    - SQLite for quota + VIP tracking (no external DB needed)
 """
 
 import os
@@ -34,7 +26,7 @@ from telegram import (
 )
 from telegram.constants import ParseMode
 from telegram.ext import (
-    Application,
+    ApplicationBuilder,
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
@@ -48,11 +40,10 @@ from telegram.ext import (
 
 BOT_TOKEN         = os.environ.get("BOT_TOKEN")
 BOT_DEV           = "Anas"
-OWNER_ID          = 7701549179                      # SAHAT ANAS — only owner
-CONTACT_USERNAME  = "@sahatanas"                    # shown in /start
+OWNER_ID          = 7701549179
+CONTACT_USERNAME  = "@sahatanas"
 SUPPORT_URL       = "https://t.me/sahatanas"
 
-# Force-join channels — users must be member of BOTH
 FORCE_JOIN_CHANNELS = [
     {"username": "@sahatanas",  "url": "https://t.me/sahatanas"},
     {"username": "@sahatanass", "url": "https://t.me/sahatanass"},
@@ -91,7 +82,7 @@ logging.basicConfig(
 logger = logging.getLogger("social_downloader_bot")
 
 download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
-active_status_text = {}   # (chat_id, message_id) -> str
+active_status_text = {}
 
 
 # --------------------------------------------------------------------------- #
@@ -193,23 +184,19 @@ def can_download(user_id: int) -> bool:
 # Force-join check
 # --------------------------------------------------------------------------- #
 
-async def check_force_join(bot, user_id: int) -> list[dict]:
-    """Return list of channels the user has NOT joined yet."""
+async def check_force_join(bot, user_id: int):
     not_joined = []
     for ch in FORCE_JOIN_CHANNELS:
         try:
             member = await bot.get_chat_member(ch["username"], user_id)
-            if member.status in (
-                ChatMember.LEFT,
-                ChatMember.BANNED,
-            ):
+            if member.status in (ChatMember.LEFT, ChatMember.BANNED):
                 not_joined.append(ch)
         except Exception:
-            not_joined.append(ch)   # if check fails, treat as not joined
+            not_joined.append(ch)
     return not_joined
 
 
-def force_join_keyboard(missing: list[dict]) -> InlineKeyboardMarkup:
+def force_join_keyboard(missing):
     buttons = [[InlineKeyboardButton(f"➕ Join {ch['username']}", url=ch["url"])]
                for ch in missing]
     buttons.append([InlineKeyboardButton("✅ I Joined — Try Again", callback_data="check_join")])
@@ -220,14 +207,14 @@ def force_join_keyboard(missing: list[dict]) -> InlineKeyboardMarkup:
 # UI helpers
 # --------------------------------------------------------------------------- #
 
-def status_keyboard() -> InlineKeyboardMarkup:
+def status_keyboard():
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("🔄 Live Status", callback_data="live_status"),
         InlineKeyboardButton("💬 Support", url=SUPPORT_URL),
     ]])
 
 
-def limit_reached_keyboard() -> InlineKeyboardMarkup:
+def limit_reached_keyboard():
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("💬 Contact Owner for VIP", url=SUPPORT_URL),
     ]])
@@ -249,7 +236,7 @@ async def set_status(message, chat_id: int, text: str, keyboard=None):
 # yt-dlp helpers
 # --------------------------------------------------------------------------- #
 
-def _extract_info_sync(url: str) -> dict:
+def _extract_info_sync(url: str):
     opts = {
         "quiet": True,
         "no_warnings": True,
@@ -268,7 +255,7 @@ def _extract_info_sync(url: str) -> dict:
         return ydl.extract_info(url, download=False)
 
 
-def _download_sync(url: str, output_template: str) -> str:
+def _download_sync(url: str, output_template: str):
     opts = {
         "format": MAX_RESOLUTION_FORMAT,
         "merge_output_format": "mp4",
@@ -294,12 +281,12 @@ def _download_sync(url: str, output_template: str) -> str:
         return ydl.prepare_filename(info)
 
 
-async def extract_info(url: str) -> dict:
+async def extract_info(url: str):
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _extract_info_sync, url)
 
 
-async def download_video(url: str, output_template: str) -> str:
+async def download_video(url: str, output_template: str):
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _download_sync, url, output_template)
 
@@ -311,7 +298,6 @@ async def download_video(url: str, output_template: str) -> str:
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     ensure_user(user.id, user.username or user.first_name)
-
     platforms_text = "\n".join(f"  • {p}" for p in SUPPORTED_PLATFORMS)
     text = (
         "👋 <b>Welcome to Social Media Downloader Bot!</b>\n\n"
@@ -339,7 +325,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     ensure_user(user.id, user.username or user.first_name)
-
     if is_vip(user.id):
         label = "Owner 👑" if user.id == OWNER_ID else "VIP 👑"
         text  = f"✅ <b>You have unlimited ({label}) access.</b>"
@@ -355,36 +340,27 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
-# ---------- Owner-only commands ---------- #
-
 async def giveaccess_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Owner only: /giveaccess <user_id>"""
     user = update.effective_user
     if user.id != OWNER_ID:
         await update.message.reply_text("⛔ This command is for the owner only.")
         return
-
     if not context.args:
         await update.message.reply_text(
             "Usage: <code>/giveaccess &lt;user_id&gt;</code>", parse_mode=ParseMode.HTML
         )
         return
-
     try:
         target_id = int(context.args[0].strip())
     except ValueError:
         await update.message.reply_text("❌ Invalid user ID. Must be a number.")
         return
-
     ensure_user(target_id, "unknown")
     set_vip(target_id, 1)
     await update.message.reply_text(
         f"✅ <b>VIP granted!</b>\nUser <code>{target_id}</code> now has unlimited access. 👑",
         parse_mode=ParseMode.HTML,
     )
-    logger.info("Owner granted VIP to user %s", target_id)
-
-    # Try to notify the user
     try:
         await context.bot.send_message(
             chat_id=target_id,
@@ -396,59 +372,49 @@ async def giveaccess_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             parse_mode=ParseMode.HTML,
         )
     except Exception:
-        pass   # user may not have started the bot yet
+        pass
 
 
 async def removeaccess_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Owner only: /removeaccess <user_id>"""
     user = update.effective_user
     if user.id != OWNER_ID:
         await update.message.reply_text("⛔ This command is for the owner only.")
         return
-
     if not context.args:
         await update.message.reply_text(
             "Usage: <code>/removeaccess &lt;user_id&gt;</code>", parse_mode=ParseMode.HTML
         )
         return
-
     try:
         target_id = int(context.args[0].strip())
     except ValueError:
         await update.message.reply_text("❌ Invalid user ID. Must be a number.")
         return
-
     set_vip(target_id, 0)
     await update.message.reply_text(
-        f"✅ VIP removed from user <code>{target_id}</code>. They are now on free quota.",
+        f"✅ VIP removed from user <code>{target_id}</code>.",
         parse_mode=ParseMode.HTML,
     )
-    logger.info("Owner removed VIP from user %s", target_id)
 
 
 async def listusers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Owner only: /listusers — show all VIP users"""
     user = update.effective_user
     if user.id != OWNER_ID:
         await update.message.reply_text("⛔ This command is for the owner only.")
         return
-
     conn = db_connect()
     cur  = conn.cursor()
     cur.execute("SELECT user_id, username, is_vip FROM users ORDER BY is_vip DESC, user_id")
     rows = cur.fetchall()
     conn.close()
-
     if not rows:
         await update.message.reply_text("No users yet.")
         return
-
     lines = ["<b>📋 All Users:</b>\n"]
     for row in rows:
         badge = "👑 VIP" if row["is_vip"] else "👤 Free"
         name  = row["username"] or "unknown"
         lines.append(f"{badge} | <code>{row['user_id']}</code> | @{name}")
-
     await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
 
@@ -466,22 +432,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current = active_status_text.get((chat_id, msg_id), "⏳ No active task right now.")
         plain   = re.sub(r"<[^>]+>", "", current)
         await query.answer(text=plain, show_alert=True)
-
     elif query.data == "check_join":
-        # User clicked "I Joined — Try Again"
         missing = await check_force_join(context.bot, user.id)
         if missing:
             await query.answer(
-                text="❌ You haven't joined all channels yet! Please join and try again.",
+                text="❌ You haven't joined all channels yet!",
                 show_alert=True,
             )
         else:
-            await query.answer(text="✅ Thank you for joining! Send your video link now.", show_alert=True)
+            await query.answer(text="✅ Thank you! Send your video link now.", show_alert=True)
             try:
                 await query.message.delete()
             except Exception:
                 pass
-
     else:
         await query.answer()
 
@@ -496,8 +459,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text    = (message.text or "").strip()
 
     url_match = GENERIC_URL_REGEX.search(text)
-
-    # No URL
     if not url_match:
         await message.reply_text(
             "🤔 That doesn't look like a video link.\n"
@@ -508,7 +469,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     url = url_match.group(0)
 
-    # Block YouTube
     if YOUTUBE_DOMAINS.search(url):
         await message.reply_text(
             "⛔ <b>YouTube is not supported here.</b>\n\n"
@@ -521,7 +481,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     ensure_user(user.id, user.username or user.first_name)
 
-    # ---- Force-join check ---- #
     missing = await check_force_join(context.bot, user.id)
     if missing:
         names = " and ".join(ch["username"] for ch in missing)
@@ -534,7 +493,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ---- Quota check ---- #
     if not can_download(user.id):
         await message.reply_text(
             "🚫 <b>Daily Limit Reached</b>\n\n"
@@ -556,8 +514,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     output_path = None
     try:
         async with download_semaphore:
-
-            # ---- Info extraction ---- #
             try:
                 info = await asyncio.wait_for(extract_info(url), timeout=30)
             except asyncio.TimeoutError:
@@ -595,7 +551,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             safe_name       = f"{user.id}_{int(time.time())}"
             output_template = os.path.join(DOWNLOAD_DIR, f"{safe_name}.%(ext)s")
 
-            # ---- Download ---- #
             try:
                 output_path = await asyncio.wait_for(
                     download_video(url, output_template), timeout=600
@@ -621,7 +576,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                  f"📦 <b>File too large to send.</b> Exceeds {MAX_FILE_SIZE_MB}MB.")
                 return
 
-            # ---- Upload ---- #
             await set_status(status_msg, status_msg.chat_id, "📤 <b>Uploading...</b>")
 
             title = info.get("title", "video")
@@ -668,7 +622,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.info("Removed temp file: %s", output_path)
         except Exception as exc:
             logger.warning("Failed to remove temp file %s: %s", output_path, exc)
-
         active_status_text.pop((status_msg.chat_id, status_msg.message_id), None)
         gc.collect()
 
@@ -694,19 +647,14 @@ def main():
 
     init_db()
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Public commands
-    app.add_handler(CommandHandler("start",         start_command))
-    app.add_handler(CommandHandler("help",          start_command))
-    app.add_handler(CommandHandler("status",        status_command))
-
-    # Owner-only commands
-    app.add_handler(CommandHandler("giveaccess",    giveaccess_command))
-    app.add_handler(CommandHandler("removeaccess",  removeaccess_command))
-    app.add_handler(CommandHandler("listusers",     listusers_command))
-
-    # Callbacks & messages
+    app.add_handler(CommandHandler("start",        start_command))
+    app.add_handler(CommandHandler("help",         start_command))
+    app.add_handler(CommandHandler("status",       status_command))
+    app.add_handler(CommandHandler("giveaccess",   giveaccess_command))
+    app.add_handler(CommandHandler("removeaccess", removeaccess_command))
+    app.add_handler(CommandHandler("listusers",    listusers_command))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
